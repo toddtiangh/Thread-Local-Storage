@@ -28,10 +28,6 @@ typedef struct ThreadLocalStorage // TLS struct + linked list implementation
 	struct ThreadLocalStorage * prev;
 	unsigned int key;
 }ThreadLocalStorage;
-/*
- * Now that data structures are defined, here's a good place to declare any
- * global variables.
- */
 
 ThreadLocalStorage * table[97] = { NULL }; // Table of threads using an arbitrary prime number for hashing
 ThreadLocalStorage * head = NULL; // doubly linked list implementation
@@ -41,10 +37,6 @@ bool first_create = true;
 unsigned long int page_size = 0; // keeping track of page size. assigned to getpagesize... could also just be defined as 4096
 int count = 0;
 
-/*
- * With global data declared, this is a good point to start defining your
- * static helper functions.
- */
 void printList() // printing linked list to make sure structure is working correctly
 {
 	for(ThreadLocalStorage * node = head; node != NULL; node = node->next)
@@ -52,10 +44,6 @@ void printList() // printing linked list to make sure structure is working corre
 		printf("%u %u %u\n", head->key, node->key, tail->key);
 	}
 }
-
-/*
- * Lastly, here is a good place to add your externally-callable functions.
- */ 
 
 void Insert(ThreadLocalStorage * new) // insert node into tail of the doubly linked list
 {
