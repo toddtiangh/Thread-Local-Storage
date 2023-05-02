@@ -32,7 +32,7 @@ typedef struct Page
 	int ref_count;
 }Page;
 
-typedef struct ThreadLocalStorage
+typedef struct ThreadLocalStorage // TLS struct + linked list implementation 
 {
 	pthread_t tid;
 	unsigned int size;
@@ -47,19 +47,19 @@ typedef struct ThreadLocalStorage
  * global variables.
  */
 
-ThreadLocalStorage * table[97] = { NULL };
-ThreadLocalStorage * head = NULL;
+ThreadLocalStorage * table[97] = { NULL }; // Table of threads using an arbitrary prime number for hashing
+ThreadLocalStorage * head = NULL; // doubly linked list implementation
 ThreadLocalStorage * tail = NULL;
-pthread_mutex_t lock;
+pthread_mutex_t lock; // lock for threads
 bool first_create = true;
-unsigned long int page_size = 0;
+unsigned long int page_size = 0; // keeping track of page size. assigned to getpagesize... could also just be defined as 4096
 int count = 0;
 
 /*
  * With global data declared, this is a good point to start defining your
  * static helper functions.
  */
-void printList()
+void printList() // printing linked list to make sure structure is working correctly
 {
 	for(ThreadLocalStorage * node = head; node != NULL; node = node->next)
 	{
@@ -71,12 +71,12 @@ void printList()
  * Lastly, here is a good place to add your externally-callable functions.
  */ 
 
-void Insert(ThreadLocalStorage * new)
+void Insert(ThreadLocalStorage * new) // insert node into tail of the doubly linked list
 {
 	pthread_t tid = pthread_self();
 	int key = tid % 97;
 	new->tid = tid;
-	if(head != NULL)
+	if(head != NULL) // if there is a head we just find the tail and assign the new node as a tail
 	{
 		ThreadLocalStorage * ptr = tail;
 		ptr->next = new;
@@ -84,7 +84,7 @@ void Insert(ThreadLocalStorage * new)
 		new->next = NULL;
 		tail = new;
 	}
-	else
+	else // otherwise we declare the new node the head
 	{
 		head = new;
 		tail = new;
@@ -92,7 +92,7 @@ void Insert(ThreadLocalStorage * new)
 		new->next = NULL;
 	}
 
-	if(table[key] != NULL)
+	if(table[key] != NULL) // quadratic probing for tls array
 	{
 		int i = 0;
 		while(table[key] != NULL)
@@ -106,8 +106,8 @@ void Insert(ThreadLocalStorage * new)
 	count++;
 }
 
-ThreadLocalStorage * Find(pthread_t tid)
-{
+ThreadLocalStorage * Find(pthread_t tid) // Finding a TLS node. If we don't find it in the table for whatever reason we can search the linked list
+{					// useful for functionality in case one data structure fails to store the node properly
 	if(head == NULL)
 		return NULL;
 	if(table[tid % 97]) return table[tid % 97];
@@ -129,7 +129,7 @@ ThreadLocalStorage * Find(pthread_t tid)
 	return NULL;
 }
 
-static void handle_page_faults(int sig, siginfo_t *si, void * context)
+static void handle_page_faults(int sig, siginfo_t *si, void * context) // get the address of where the page fault happened. we find the page and terminate the thread.
 {
 	unsigned long int page_fault = (unsigned long int) si->si_addr;
 	
@@ -150,7 +150,7 @@ static void handle_page_faults(int sig, siginfo_t *si, void * context)
 
 int tls_create(unsigned int size)
 {
-	if(first_create)
+	if(first_create) // signal handling for page_faults
 	{
 		first_create = false;
 		pthread_mutex_init(&lock, NULL);
@@ -166,33 +166,33 @@ int tls_create(unsigned int size)
 
 	pthread_t tid = pthread_self();
 
-	if(size < 1 || Find(tid) != NULL) return -1;
+	if(size < 1 || Find(tid) != NULL) return -1; 
 
-	ThreadLocalStorage * node = (ThreadLocalStorage*) malloc(sizeof(ThreadLocalStorage));
+	ThreadLocalStorage * node = (ThreadLocalStorage*) malloc(sizeof(ThreadLocalStorage)); // malloc new TLS struct and malloc the page array and each page.
 	node->size = size;
 	node->page_num = size / page_size + 1;	
 	node->pages = (Page**) malloc(node->page_num * sizeof(Page*));
 	for(int i = 0 ; i < node->page_num; i++)
 	{
 		Page * page = (Page*) malloc(sizeof(Page));
-		page->address = (unsigned long int) mmap(0, page_size, PROT_READ, (MAP_ANON | MAP_PRIVATE), 0, 0);
-		if(page->address == (unsigned long int) MAP_FAILED) return -1;
+		page->address = (unsigned long int) mmap(0, page_size, PROT_READ, (MAP_ANON | MAP_PRIVATE), 0, 0); // map page to virtual memory address
+		if(page->address == (unsigned long int) MAP_FAILED) return -1; 
 		page->ref_count = 1;
 		node->pages[i] = page;
 	}
 
-	Insert(node);
+	Insert(node); // Inser node to tls array and linked list
 	
 	return 0;
 }
 
-int tls_destroy()
+int tls_destroy() // we find the node and remove it from the linked list and free the allocated memory
 {
 	pthread_t tid = pthread_self();
 	ThreadLocalStorage * node = Find(tid);	
 	if(node == NULL) return -1;
-	if(head->key == node->key)
-	{
+	if(head->key == node->key) // Could be faulty in the sense that this function assumes that the node will always either be the head or tail. If there were 
+	{ // An input tid or key, this could create problems in our linked list.
 		ThreadLocalStorage * temp;
 		if(node->next != NULL)
 		{
@@ -246,7 +246,7 @@ int tls_destroy()
 
 int tls_read(unsigned int offset, unsigned int length, char *buffer)
 {
-	pthread_t tid = pthread_self();
+	pthread_t tid = pthread_self(); // We find the node that we want to read and check first if the input variables offset + length is greater than the size of the node
 	ThreadLocalStorage * node = Find(tid);
 
 	if(node == NULL) return -1;
@@ -256,27 +256,33 @@ int tls_read(unsigned int offset, unsigned int length, char *buffer)
 		return -1;
 	}
 
-	pthread_mutex_lock(&lock);
+	pthread_mutex_lock(&lock); // lock so to prevent race conditions or unwanted behavior from other threads
 
-	for(int i = 0; i < node->page_num; i++)
-	{
-		if(mprotect((void*) node->pages[i]->address, page_size, PROT_READ) == -1)
-		{
+	for(int i = 0; i < node->page_num; i++) // change the access permissions of the pages to allow for reads. In retrospect this probably is inefficent
+	{ 				// If we are not reading the entire page array, it is probably better to only allow access to the pages to be read.
+		if(mprotect((void*) node->pages[i]->address, page_size, PROT_READ) == -1) // but since we acquired a lock it probably is fine but in terms of runtime,
+		{     								// it may be inefficient especially if we are doing alot of these system calls constantly
 			exit(1);
 		}
 	}
-	
-	for(unsigned int i = offset; i < offset + length; i++)
+
+	char * buffer_ptr = buffer; // create a buffer_ptr that we can increment as me memcpy to the buffer
+	unsigned int start_page = offset / page_size; // we want to calculate which page we start and which page we end
+	unsigned int end_page = (offset + length) / page_size;
+
+	for(unsigned int i = start_page; i <= end_page; i++) // we loop through the total amount of pages we need
 	{
-		unsigned int pg_num = i / page_size;
-		unsigned int pg_offset = i % page_size;
-		Page * page = node->pages[pg_num];
+		unsigned int start_offset = 0;
+		if(i == start_page) start_offset = offset % page_size; // if we are on the first page, we want to calculate any offset we have on that page
+		unsigned int end_offset = page_size; // Given the inputs, we may not want to always start on address 0 on our first page.
+		if(i == end_page) end_offset = (offset + length) % page_size; // similarly if we arrive on the end page we want to also account for any offset we may have
+									// as we may not want to read the entire page..
+		char * page_ptr = (char*) node->pages[i]->address; // we create a ptr to the starting address of the page
+		memcpy(buffer_ptr, page_ptr + start_offset, end_offset - start_offset); // increment the page_ptr to the offset we calculated before and 
+		buffer_ptr += (end_offset - start_offset); // calculate the amount of bytes we want to cpy into buffer by taking the page_size - offset
+	}	// Similarly if we are on the last page, we start at the first byte of that page and cpy the length of bytes calculated by the end offset of the page 
 
-		char * first_byte = (char *) (page->address + pg_offset);
-		buffer[i - offset] = *first_byte;
-
-	}
-	for(int i = 0; i < node->page_num; i++)
+	for(int i = 0; i < node->page_num; i++) // reprotect
 	{
 		if(mprotect((void *) node->pages[i]->address, page_size, PROT_NONE) == -1)
 		{
@@ -284,14 +290,14 @@ int tls_read(unsigned int offset, unsigned int length, char *buffer)
 		}
 	}
 
-	pthread_mutex_unlock(&lock);
+	pthread_mutex_unlock(&lock); //release the lock 
 
 	return 0;
 }
 
-Page * tls_private_copy(ThreadLocalStorage * node, Page * page, unsigned int page_num)
-{
-	Page * page_copy = (Page*) malloc(sizeof(Page));
+Page * tls_private_copy(ThreadLocalStorage * node, Page * page, unsigned int page_num) // creates a copy of the page if the page has more than 1 reference.
+{										// we do this because we dont want to change the contents of the page for other 
+	Page * page_copy = (Page*) malloc(sizeof(Page));			// threads. Doing so could result in race conditions.
 	page_copy->address = (unsigned long int) mmap(0, page_size, PROT_WRITE,(MAP_ANON | MAP_PRIVATE), 0, 0);
 	memcpy((void*) page_copy->address, (void*) page->address, page_size);
 	page_copy->ref_count = 1;
@@ -299,7 +305,7 @@ Page * tls_private_copy(ThreadLocalStorage * node, Page * page, unsigned int pag
 	return page_copy;
 }
 
-int tls_write(unsigned int offset, unsigned int length, const char *buffer)
+int tls_write(unsigned int offset, unsigned int length, const char *buffer) // same concept as tls_read except for creating a private page copy
 {
 	pthread_t tid = pthread_self();
 	ThreadLocalStorage * node = Find(tid);
@@ -323,29 +329,36 @@ int tls_write(unsigned int offset, unsigned int length, const char *buffer)
 			exit(0);
 		}
 	}
-	for(unsigned int i = offset;  i < offset + length; i++)
-	{
 
-		unsigned int pg_num = i / page_size;
-		unsigned int pg_offset = i % page_size;
-		Page * page = node->pages[pg_num];
+	const char * buffer_ptr = buffer;
+	unsigned int start_page = offset / page_size;
+	unsigned int end_page = (offset + length) / page_size;
+
+	for(unsigned int i = start_page; i <= end_page; i++)
+	{
+		Page * page = node->pages[i];
 
 		if(page->ref_count >= 2)
 		{
-			Page * pg_cpy = tls_private_copy(node, page, pg_num);
-			node->pages[pg_num] = pg_cpy;
-			page->ref_count--;
-			if(mprotect((void*) page->address, page_size, PROT_NONE))
+			Page * pg_cpy = tls_private_copy(node, page, i);
+			node->pages[i] = pg_cpy; // now the page in our tls page table is replaced by the copy, and all other references still refer to the "clean" page
+			page->ref_count--; // we want to decrement the ref_count of our clean page as this tls_node page table now contains the copied page.
+			if(mprotect((void*) page->address, page_size, PROT_NONE)) // reprotect the old page as now our mprotect loop will be protecting the copy
 			{
 				exit(1);
 			}
-			page = pg_cpy;
 		}
-		char * first_byte = (char*) (page->address + pg_offset);
-		*first_byte = buffer[i - offset];	
+
+		unsigned int start_offset = 0; // same concept as tls_read except we memcpy to the first page + (offset) to the last page size - (offset) from the buffer
+		if(i == start_page) start_offset = offset % page_size; 
+		unsigned int end_offset = page_size;
+		if(i == end_page) end_offset = (offset + length) % page_size;
+		char * page_ptr = (char*) node->pages[i]->address;
+		memcpy(page_ptr + start_offset, buffer_ptr, end_offset - start_offset);
+		buffer_ptr += (end_offset - start_offset);
 	}
 
-	for(int i = 0; i < node->page_num; i++)
+	for(int i = 0; i < node->page_num; i++) // reprotect pages
 	{
 		if(mprotect((void *) node->pages[i]->address, page_size, PROT_NONE))
 		{
@@ -353,36 +366,36 @@ int tls_write(unsigned int offset, unsigned int length, const char *buffer)
 		}
 	}
 	
-	pthread_mutex_unlock(&lock);
+	pthread_mutex_unlock(&lock); // release lock
 
 	return 0;
 }
 
-int tls_clone(pthread_t tid)
+int tls_clone(pthread_t tid) // find the tls node we need to clone using its tid
 {
 
-	pthread_t clone_tid = pthread_self();
-	ThreadLocalStorage * clone = Find(clone_tid);
-	
-	if(clone != NULL) return -1;
+	pthread_t clone_tid = pthread_self(); 
 	
 	ThreadLocalStorage * node = Find(tid);
 
 	if(node == NULL) return -1;
 	
-	clone = (ThreadLocalStorage*) malloc(sizeof(ThreadLocalStorage));
+	ThreadLocalStorage * clone = (ThreadLocalStorage*) malloc(sizeof(ThreadLocalStorage)); // allocate memory for a clone tls that has the same variables as our target tls
 	
 	clone->page_num = node->page_num;
 	clone->size = node->size;
+	clone->tid = clone_tid;
 
 	clone->pages = (Page**) malloc(clone->page_num * sizeof(Page*));
 
 	for(int i = 0 ; i < clone->page_num; i++)
 	{
+		clone->pages[i] = (Page*) malloc(sizeof(Page));
 		clone->pages[i] = node->pages[i];
 		clone->pages[i]->ref_count++;
 	}
-	Insert(clone);
+
+	Insert(clone); // insert clone
 
 	return 0;
 }
