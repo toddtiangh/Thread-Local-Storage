@@ -12,20 +12,6 @@
 #include <math.h>
 #include <signal.h>
 
-
-/*
- * This is a good place to define any data structures you will use in this file.
- * For example:
- *  - struct TLS: may indicate information about a thread's local storage
- *    (which thread, how much storage, where is the storage in memory)
- *  - struct page: May indicate a shareable unit of memory (we specified in
- *    homework prompt that you don't need to offer fine-grain cloning and CoW,
- *    and that page granularity is sufficient). Relevant information for sharing
- *    could be: where is the shared page's data, and how many threads are sharing it
- *  - Some kind of data structure to help find a TLS, searching by thread ID.
- *    E.g., a list of thread IDs and their related TLS structs, or a hash table.
- */
-
 typedef struct Page
 {
 	unsigned long int address;
